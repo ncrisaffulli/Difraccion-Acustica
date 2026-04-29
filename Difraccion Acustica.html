@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Simulador Acústico - Auralización por Suma de Bandas</title>
+    <style>
+        body {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            background-color: #f0f0f0;
+            font-family: sans-serif;
+        }
+        .canvas-container {
+            position: relative;
+            margin-bottom: 20px;
+        }
+        canvas {
+            background-color: white;
+            border: 1px solid #ccc;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.1);
+        }
+        .ear-btn {
+            position: absolute;
+            width: 25px;
+            height: 25px;
+            background-color: #CC6600;
+            border: 2px solid white;
+            border-radius: 50%;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+            transition: all 0.2s;
+            z-index: 10;
+        }
+        .ear-btn:hover { transform: scale(1.1); background-color: #e67a00; }
+        .ear-btn.active { 
+            background-color: #ffcc00; 
+            border-color: #CC6600; 
+            box-shadow: 0 0 15px rgba(204, 102, 0, 0.6);
+        }
+
+        .controls-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 15px;
+            background: white;
+            padding: 20px 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            width: 800px;
+            box-sizing: border-box;
+        }
+        .sliders-panel {
+            display: flex;
+            justify-content: space-around;
+            width: 100%;
+            gap: 20px;
+        }
+        .slider-wrapper {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 5px;
+            font-weight: bold;
+            color: #333;
+            font-size: 13px;
+        }
+        .buttons-panel {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            width: 100%;
+            padding-top: 10px;
+            border-top: 1px solid #eee;
+        }
+        .btn {
+            display: flex; align-items: center; gap: 6px; padding: 8px 15px;
+            border: none; border-radius: 5px; color: white; font-weight: bold;
+            font-size: 12px; cursor: pointer;
+        }
+        .btn-red { background-color: rgb(255, 0, 0); }
+        .btn-green { background-color: rgb(0, 160, 0); }
+        .btn-blue { background-color: rgb(0, 80, 255); }
+        .btn.paused { opacity: 0.4; background-color: #777; }
+        
+        input[type="range"] { cursor: pointer; }
+    </style>
+</head>
+<body>
+
+    <h2>Difracción Acústica</h2>
+
+    <div class="canvas-container">
+        <canvas id="acousticCanvas" width="920" height="420"></canvas>
+        <button id="earAlta" class="ear-btn">👂</button>
+        <button id="earMedia" class="ear-btn">👂</button>
+        <button id="earBaja" class="ear-btn">👂</button>
+    </div>
+    
+    <div class="controls-container">
+        <div class="sliders-panel">
+            <div class="slider-wrapper">
+                <label>Propagación</label>
+                <input type="range" id="speedSlider" min="0.5" max="5" step="0.1" value="1.8">
+                <span id="speedValue">1.8x</span>
+            </div>
+            <div class="slider-wrapper">
+                <label>Frecuencia Visual</label>
+                <input type="range" id="freqSlider" min="0.5" max="3" step="0.1" value="1.0">
+                <span id="freqValue">1.0x</span>
+            </div>
+            <div class="slider-wrapper">
+                <label>Volumen General</label>
+                <input type="range" id="volumeSlider" min="0" max="1" step="0.05" value="0.5">
+                <span id="volumeValue">50%</span>
+            </div>
+        </div>
+        <div class="buttons-panel">
+            <button id="btnAlta" class="btn btn-red paused">▶ Corte Alta Frecuencia</button>
+            <button id="btnMedia" class="btn btn-green paused">▶ Corte Media Frecuencia</button>
+            <button id="btnBaja" class="btn btn-blue paused">▶ Corte Baja Frecuencia</button>
+        </div>
+    </div>
+
+    <script>
+        window.onload = function() {
+            const canvas = document.getElementById('acousticCanvas');
+            const ctx = canvas.getContext('2d');
+
+            // --- ESTADO INICIAL APAGADO ---
+            let playAlta = false, playMedia = false, playBaja = false;
+            let velocidadOndas = 1.8, multFrecuencia = 1.0;
+            let currentAudioZone = null;
+
+            // --- LÓGICA DE AUDIO (REPLICADA DE GEMINI-CODE-1777475733932) ---
+            let audioCtx;
+            let fuenteRuido;
+
+            const bandas = {
+                baja:  { tipoFiltro: 'lowpass',  hz: 800,  filtro: null, gain: null },
+                media: { tipoFiltro: 'bandpass', hz: 2000, filtro: null, gain: null },
+                alta:  { tipoFiltro: 'highpass', hz: 5000, filtro: null, gain: null }
+            };
+
+            function inicializarAudio() {
+                if (!audioCtx) {
+                    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                    
+                    // Crear buffer de ruido blanco
+                    const bufferSize = audioCtx.sampleRate * 2; 
+                    const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+                    const data = buffer.getChannelData(0);
+                    for (let i = 0; i < bufferSize; i++) { data[i] = Math.random() * 2 - 1; }
+
+                    fuenteRuido = audioCtx.createBufferSource();
+                    fuenteRuido.buffer = buffer;
+                    fuenteRuido.loop = true;
+
+                    // Configurar las tres rutas en paralelo
+                    Object.keys(bandas).forEach(tipo => {
+                        const b = bandas[tipo];
+                        b.filtro = audioCtx.createBiquadFilter();
+                        b.filtro.type = b.tipoFiltro;
+                        b.filtro.frequency.value = b.hz;
+                        if (tipo === 'media') b.filtro.Q.value = 1;
+
+                        b.gain = audioCtx.createGain();
+                        b.gain.gain.setValueAtTime(0, audioCtx.currentTime);
+
+                        fuenteRuido.connect(b.filtro);
+                        b.filtro.connect(b.gain);
+                        b.gain.connect(audioCtx.destination);
+                    });
+
+                    fuenteRuido.start();
+                }
+            }
+
+            function setAudioZone(zone) {
+                inicializarAudio();
+                if (audioCtx.state === 'suspended') audioCtx.resume();
+
+                const volMaster = parseFloat(document.getElementById('volumeSlider').value);
+                const ahora = audioCtx.currentTime;
+
+                document.querySelectorAll('.ear-btn').forEach(b => b.classList.remove('active'));
+
+                if (currentAudioZone === zone) {
+                    // Apagar todo
+                    Object.values(bandas).forEach(b => b.gain.gain.setTargetAtTime(0, ahora, 0.05));
+                    currentAudioZone = null;
+                } else {
+                    currentAudioZone = zone;
+                    document.getElementById('ear' + zone.charAt(0).toUpperCase() + zone.slice(1)).classList.add('active');
+
+                    // Lógica de suma de frecuencias solicitada:
+                    // Alta: Suenan los 3
+                    // Media: Suenan Media y Baja
+                    // Baja: Suena solo Baja
+                    bandas.baja.gain.gain.setTargetAtTime(volMaster * 0.3, ahora, 0.05);
+                    bandas.media.gain.gain.setTargetAtTime((zone === 'media' || zone === 'alta' ? volMaster * 0.3 : 0), ahora, 0.05);
+                    bandas.alta.gain.gain.setTargetAtTime((zone === 'alta' ? volMaster * 0.3 : 0), ahora, 0.05);
+                }
+            }
+
+            // --- UI HANDLERS ---
+            document.getElementById('speedSlider').oninput = function() { 
+                velocidadOndas = parseFloat(this.value); 
+                document.getElementById('speedValue').textContent = velocidadOndas.toFixed(1) + 'x';
+            };
+            document.getElementById('freqSlider').oninput = function() { 
+                multFrecuencia = parseFloat(this.value); 
+                document.getElementById('freqValue').textContent = multFrecuencia.toFixed(1) + 'x';
+            };
+            document.getElementById('volumeSlider').oninput = function() {
+                let v = parseFloat(this.value);
+                document.getElementById('volumeValue').textContent = Math.round(v*100) + '%';
+                if (currentAudioZone) {
+                    const ahora = audioCtx.currentTime;
+                    bandas.baja.gain.gain.setTargetAtTime(v * 0.3, ahora, 0.05);
+                    bandas.media.gain.gain.setTargetAtTime((currentAudioZone === 'media' || currentAudioZone === 'alta' ? v * 0.3 : 0), ahora, 0.05);
+                    bandas.alta.gain.gain.setTargetAtTime((currentAudioZone === 'alta' ? v * 0.3 : 0), ahora, 0.05);
+                }
+            };
+
+            document.getElementById('earAlta').onclick = () => setAudioZone('alta');
+            document.getElementById('earMedia').onclick = () => setAudioZone('media');
+            document.getElementById('earBaja').onclick = () => setAudioZone('baja');
+
+            function togglePlay(btnId, type) {
+                const btn = document.getElementById(btnId);
+                let isP = type === 'alta' ? (playAlta = !playAlta) : type === 'media' ? (playMedia = !playMedia) : (playBaja = !playBaja);
+                btn.classList.toggle('paused', !isP);
+                const txt = type === 'alta' ? 'Alta' : type === 'media' ? 'Media' : 'Baja';
+                btn.innerHTML = (isP ? '⏸' : '▶') + ` Corte ${txt} Frecuencia`;
+            }
+            document.getElementById('btnAlta').onclick = () => togglePlay('btnAlta', 'alta');
+            document.getElementById('btnMedia').onclick = () => togglePlay('btnMedia', 'media');
+            document.getElementById('btnBaja').onclick = () => togglePlay('btnBaja', 'baja');
+
+            // --- GEOMETRÍA (PRESERVADA) ---
+            const zonaW = 720, sueloY = 360;
+            const fuenteX = 100, fuenteY = 270;
+            const muroX = 400, muroY = 130, muroW = 40;
+            const distMuro = Math.hypot(muroX - fuenteX, muroY - fuenteY);
+            const baseAngle = Math.atan2(muroY - fuenteY, muroX - fuenteX);
+            const originX = muroX + muroW, originY = muroY;
+            const angAlta = 0.18, angMedia = 0.45, angBaja = 0.90;
+            const yEndVision = fuenteY + Math.tan(baseAngle) * (zonaW - fuenteX);
+
+            function posEar(id, ang, xOff, isBaja=false) {
+                let x = originX + xOff;
+                let y = originY + Math.tan(ang) * xOff;
+                if(isBaja) { x = originX + 180; y = sueloY - 45; }
+                const b = document.getElementById(id);
+                b.style.left = (x - 19) + "px"; b.style.top = (y - 19) + "px";
+            }
+            posEar('earAlta', angAlta - 0.1, 240);
+            posEar('earMedia', angMedia - 0.18, 180);
+            posEar('earBaja', 0, 0, true);
+
+            let ondas = [], frame = 0;
+
+            function drawLabel(text, angle, colorStr, isBaja = false) {
+                let x = zonaW, y = originY + Math.tan(angle) * (zonaW - originX);
+                if(isBaja) { x = originX + (sueloY - originY)/Math.tan(angBaja); y = sueloY; }
+                ctx.strokeStyle = colorStr; ctx.lineWidth = 2;
+                ctx.beginPath(); ctx.moveTo(x, y); 
+                if(isBaja) ctx.lineTo(x, y + 20); else ctx.lineTo(x + 15, y);
+                ctx.stroke();
+                ctx.fillStyle = "white";
+                let bx = isBaja ? x - 80 : x + 15, by = isBaja ? y + 20 : y - 15;
+                ctx.fillRect(bx, by, 160, 30); ctx.strokeRect(bx, by, 160, 30);
+                ctx.fillStyle = "black"; ctx.font = "bold 11px sans-serif";
+                ctx.fillText(text, bx + 10, by + 18);
+            }
+
+            function loop() {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                let iA = Math.max(3, Math.round(15/multFrecuencia)), iM = Math.max(3, Math.round(30/multFrecuencia)), iB = Math.max(3, Math.round(60/multFrecuencia));
+                if (playAlta && frame % iA === 0) ondas.push({ r: 0, o: 1, c: '255,0,0', t:'alta' });
+                if (playMedia && frame % iM === 0) ondas.push({ r: 0, o: 1, c: '0,160,0', t:'media' });
+                if (playBaja && frame % iB === 0) ondas.push({ r: 0, o: 1, c: '0,80,255', t:'baja' });
+
+                ctx.save();
+                ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(zonaW, 0); ctx.lineTo(zonaW, yEndVision);
+                ctx.lineTo(muroX, muroY); ctx.lineTo(muroX, sueloY); ctx.lineTo(0, sueloY); ctx.closePath();
+                ctx.clip();
+                ondas.forEach(o => {
+                    ctx.strokeStyle = `rgba(${o.c}, ${o.o})`; ctx.lineWidth = 3.5;
+                    ctx.beginPath(); ctx.arc(fuenteX, fuenteY, o.r, 0, Math.PI * 2); ctx.stroke();
+                });
+                ctx.restore();
+
+                ondas.forEach(o => {
+                    let rd = o.r - distMuro;
+                    if (rd > 0) {
+                        ctx.save(); ctx.beginPath(); ctx.moveTo(muroX, muroY); ctx.lineTo(zonaW, yEndVision);
+                        if (o.t === 'alta') ctx.lineTo(zonaW, originY + Math.tan(angAlta)*(zonaW-originX));
+                        else if (o.t === 'media') ctx.lineTo(zonaW, originY + Math.tan(angMedia)*(zonaW-originX));
+                        else { ctx.lineTo(zonaW, sueloY); ctx.lineTo(originX + (sueloY - originY)/Math.tan(angBaja), sueloY); }
+                        ctx.lineTo(muroX, muroY); ctx.clip();
+                        ctx.strokeStyle = `rgba(${o.c}, ${o.o})`; ctx.lineWidth = 3.5;
+                        ctx.beginPath(); ctx.arc(muroX, muroY, rd, baseAngle, Math.PI); ctx.stroke();
+                        ctx.restore();
+                    }
+                    o.r += velocidadOndas; o.o -= (0.0022 * (velocidadOndas / 1.8));
+                });
+                ondas = ondas.filter(o => o.o > 0);
+
+                // Ladrillos
+                ctx.fillStyle = "#c15f3d"; ctx.fillRect(muroX, muroY, muroW, sueloY - muroY);
+                ctx.strokeStyle = "#e8d8c8"; ctx.lineWidth = 1;
+                for (let y = muroY; y < sueloY; y += 12) {
+                    ctx.beginPath(); ctx.moveTo(muroX, y); ctx.lineTo(muroX + muroW, y); ctx.stroke();
+                }
+                ctx.strokeStyle = "black"; ctx.lineWidth = 2; ctx.strokeRect(muroX, muroY, muroW, sueloY - muroY);
+                
+                ctx.fillStyle = "black"; ctx.font = "bold 16px sans-serif"; ctx.textAlign = "center";
+                ctx.fillText("Sombra", muroX + 80, 260); ctx.fillText("Acústica", muroX + 80, 280);
+                ctx.textAlign = "start";
+
+                ctx.strokeStyle = "black"; ctx.lineWidth = 6;
+                ctx.beginPath(); ctx.moveTo(0, sueloY); ctx.lineTo(zonaW, sueloY); ctx.stroke();
+                ctx.fillStyle = "black"; ctx.beginPath(); ctx.arc(fuenteX, fuenteY, 6, 0, Math.PI * 2); ctx.fill();
+                ctx.font = "bold 14px sans-serif"; ctx.fillText("Fuente", fuenteX - 25, fuenteY - 15);
+
+                ctx.setLineDash([5, 5]); ctx.lineWidth = 1.5; ctx.strokeStyle = "#555";
+                ctx.beginPath(); ctx.moveTo(fuenteX, fuenteY); ctx.lineTo(zonaW, yEndVision); ctx.stroke();
+                ctx.setLineDash([]);
+                ctx.lineWidth = 2;
+                ctx.strokeStyle = "red"; ctx.beginPath(); ctx.moveTo(originX, originY); ctx.lineTo(zonaW, originY + Math.tan(angAlta)*(zonaW-originX)); ctx.stroke();
+                ctx.strokeStyle = "green"; ctx.beginPath(); ctx.moveTo(originX, originY); ctx.lineTo(zonaW, originY + Math.tan(angMedia)*(zonaW-originX)); ctx.stroke();
+                ctx.strokeStyle = "blue"; ctx.beginPath(); ctx.moveTo(originX, originY); ctx.lineTo(originX + (sueloY - originY)/Math.tan(angBaja), sueloY); ctx.stroke();
+
+                ctx.strokeStyle = "#ccc"; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(zonaW, 0); ctx.lineTo(zonaW, canvas.height); ctx.stroke();
+                drawLabel("Corte Alta Frecuencia", angAlta, "red");
+                drawLabel("Corte Media Frecuencia", angMedia, "green");
+                drawLabel("Corte Baja Frecuencia", angBaja, "blue", true);
+
+                frame++; requestAnimationFrame(loop);
+            }
+            loop();
+        };
+    </script>
+</body>
+</html>
